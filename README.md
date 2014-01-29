@@ -1,4 +1,3 @@
-speakerdeck-to-slideshare
-=========================
+# A Utility to Synchronize Content from Speakerdeck to Slideshare
 
-speakerdeck client that can synchronize presentations to Slideshare.net.
+[Speakerdeck](http://speakderdeck.com), in so far as I can tell, doesn't have an API with which to publish content. But, it can be easily-enough screen scraped to extract a downloadable `.pdf` file. And, [SlideShare](http://slideshare.net) *does* offer an [API](https://code.google.com/p/jslideshare/), so the goal of this project is to bridge the two, possibly using a little Spring Social magic. 
