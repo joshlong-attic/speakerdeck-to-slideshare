@@ -151,10 +151,10 @@ class SpeakerDeckClient {
         Elements publicTalks = document.select("[class=talk public]");
         for (org.jsoup.nodes.Element e : publicTalks) {
 
-            // account information
             SpeakerDeckAccount account = null;
             SpeakerDeckPresentation presentation = null;
 
+            // account information
             for (org.jsoup.nodes.Element dateE : e.select("[class=date]")) {
                 Elements aElement = dateE.select("a[href]");
                 String humanName = aElement.text();
@@ -163,8 +163,7 @@ class SpeakerDeckClient {
             }
 
             // title
-            for (org.jsoup.nodes.Element titleE :
-                    e.select("[class=talk-listing-meta]").select("h3[class=title]")) {
+            for (org.jsoup.nodes.Element titleE : e.select("[class=talk-listing-meta]").select("h3[class=title]")) {
                 Element aElement = titleE.select("a").first();
                 String title = aElement.getAllElements().text();
                 String url = aElement.absUrl("href");
