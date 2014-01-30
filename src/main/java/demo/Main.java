@@ -1,5 +1,8 @@
 package demo;
 
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.IOUtils;
+import org.apache.commons.lang3.SystemUtils;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.commons.lang3.builder.ToStringBuilder;
@@ -21,8 +24,12 @@ import org.springframework.util.Assert;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.io.Serializable;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -51,10 +58,7 @@ class PresentationSynchronizer implements InitializingBean {
     @Override
     public void afterPropertiesSet() throws Exception {
         SpeakerDeckClient speakerDeckClient = new SpeakerDeckClient();
-
-        // test searching results
-        Iterator<SpeakerDeckPresentation> results =
-                speakerDeckClient.searchResultPresentations("Spring Framework");
+        Iterator<SpeakerDeckPresentation> results = speakerDeckClient.searchResultPresentations("Spring Framework");
         this.enumerate(results);
     }
 }
@@ -71,17 +75,12 @@ public class Main {
 }
 
 
-/**
- * Client to return information on search results from a given Speakerdeck page.
- * <p/>
- * Possible values include account profiles like and search
- * results like .
- */
 @Component
 class SpeakerDeckClient {
 
     private final String speakerDeckBaseUri = "https://speakerdeck.com";
-
+    private Logger logger = Logger.getLogger(getClass());
+    private boolean debug = true;
     private RestTemplate restTemplate;
 
     public SpeakerDeckClient(RestTemplate restTemplate) {
@@ -92,58 +91,116 @@ class SpeakerDeckClient {
         this(new RestTemplate());
     }
 
-
     private Iterator<SpeakerDeckPresentation> userPresentations(String user) {
         return null;
     }
 
     public Iterator<SpeakerDeckPresentation> searchResultPresentations(String query) {
-
         URI uri = UriComponentsBuilder
                 .fromHttpUrl(speakerDeckBaseUri + "/search")
                 .queryParam("q", query)
                 .build()
                 .toUri();
-
-        try {
-            return this.crawl(uri);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        return new SpeakerDeckIterator(uri);
     }
 
+    private String fileNameForURI(URI uri) {
+        String uriStr = uri.toString();
+        String nString = "";
+        for (char c : uriStr.toCharArray()) {
+            nString += Character.isLetterOrDigit(c) ? c : "";
+        }
+        return nString + ".html";
+    }
 
     private String get(URI uri) {
+        try {
+            String content = null;
+
+            if (this.debug) {
+                logger.debug("get('" + uri.toString() + "')");
+                File tmpDir = SystemUtils.getJavaIoTmpDir();
+                File fileForUri = new File(tmpDir, fileNameForURI(uri));
+                logger.debug("checking for file '" + fileForUri.toString() + "'");
+                if (fileForUri.exists()) {
+
+                    return FileUtils.readFileToString(fileForUri);
+
+                } else {
+                    content = doGet(uri);
+                    try (FileWriter fw = new FileWriter(fileForUri)) {
+                        IOUtils.write(content, fw);
+                        logger.debug("writing to file '" + fileForUri.toString() + "'.");
+                    }
+
+                }
+            }
+
+            if (content == null) { // it may not be if debug == true
+                content = doGet(uri);
+            }
+            return content;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+
+    }
+
+    private String doGet(URI uri) {
         ResponseEntity<String> responseEntity = restTemplate.exchange(
-            uri, HttpMethod.GET, null, new ParameterizedTypeReference<String>() {});
+                uri, HttpMethod.GET, null, new ParameterizedTypeReference<String>() {
+        });
         return responseEntity.getBody();
     }
 
 
-    // todo remove this. This is a mock implementation of #get so that I can avoid deluging the website itself during development.
-   /* private String get(URI uri) {
-        File desktop = new File(System.getProperty("user.home"), "Desktop");
-        File fakeHtml = new File(desktop, "sample.html");
-        try {
-            BufferedReader bufferedReader = new BufferedReader(new FileReader(fakeHtml));
-            String line = null, in = "";
-            while ((line = bufferedReader.readLine()) != null) {
-                in = in + line;
-            }
-            return in;
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+    private static class CrawlResults {
+        private URI next;
+        private List<SpeakerDeckPresentation> presentations = new ArrayList<>();
+        private int currentPage;
+
+        @Override
+        public String toString() {
+            ToStringBuilder toStringBuilder
+                    = new ToStringBuilder(this, ToStringStyle.MULTI_LINE_STYLE)
+                    .append("currentPageNo", currentPage)
+                    .append("presentations", presentations.size())
+                    .append("next", this.next == null ? "" : this.next.toString());
+            return toStringBuilder.toString();
+        }
+
+        public URI getNext() {
+            return next;
+        }
+
+        public boolean hasNext() {
+            return null != this.next;
+        }
+
+        public List<SpeakerDeckPresentation> getPresentations() {
+            return presentations;
+        }
+
+        public int getCurrentPage() {
+            return currentPage;
+        }
+
+        private CrawlResults(List<SpeakerDeckPresentation> presentations, int currentPage, URI next) {
+            this.presentations = presentations;
+            this.next = next;
+            this.currentPage = currentPage;
         }
     }
-*/
 
     /**
      * Reads the results from a given page and gives the client back a (delegating) iterator.
      *
      * @see {@code http://www.w3.org/TR/2009/PR-css3-selectors-20091215/#attribute-representation}
      */
-    private Iterator<SpeakerDeckPresentation> crawl(URI uri) throws Exception {
+    private CrawlResults crawl(URI uri) {
         String htmlForPage = get(uri);
+
+        logger.debug(String.format("crawling '%s'", uri.toString()));
 
         List<SpeakerDeckPresentation> presentations = new ArrayList<SpeakerDeckPresentation>();
 
@@ -173,27 +230,54 @@ class SpeakerDeckClient {
             }
             presentations.add(presentation);
         }
-        return new SpeakerDeckIterator(presentations);
+
+        // let's find out the current page number
+
+        Elements currentPageElement = document.select("[class=page current]");
+        int currentPageNo = Integer.parseInt(currentPageElement.text().trim());
+
+        // let's find out if there's a "next" page, and if so, what it is
+        URI next = null;
+        Elements nextElement = document.select("a[rel=next]");
+        try {
+            next = new URI(speakerDeckBaseUri + "" + nextElement.attr("href"));
+        } catch (URISyntaxException e) {
+            e.printStackTrace();
+        }
+
+        CrawlResults crawlResults = new CrawlResults(presentations, currentPageNo, next);
+        logger.debug("crawlResults: " + crawlResults.toString());
+        return crawlResults;
     }
 
     private class SpeakerDeckIterator implements Iterator<SpeakerDeckPresentation> {
 
-        private List<SpeakerDeckPresentation> presentations;
-        private Iterator<SpeakerDeckPresentation> presentationsIterator;
+        // todo can we use an Executor to "pre-fetch" the results in here?
+        private URI uri;
+        private CrawlResults crawlResults;
+        private Iterator<SpeakerDeckPresentation> speakerDeckPresentationsIterator;
 
-        public SpeakerDeckIterator(List<SpeakerDeckPresentation> presentations) {
-            this.presentations = presentations;
-            this.presentationsIterator = this.presentations.iterator();
+        private void loadFreshResults() {
+            if (this.crawlResults == null) {
+                this.crawlResults = crawl(this.uri);
+                this.speakerDeckPresentationsIterator = this.crawlResults.getPresentations().iterator();
+            }
+        }
+
+        public SpeakerDeckIterator(URI uri) {
+            this.uri = uri;
         }
 
         @Override
         public boolean hasNext() {
-            return this.presentationsIterator.hasNext();
+            loadFreshResults();
+            return this.speakerDeckPresentationsIterator.hasNext();
         }
 
         @Override
         public SpeakerDeckPresentation next() {
-            return this.presentationsIterator.next();
+            loadFreshResults();
+            return this.speakerDeckPresentationsIterator.next();
         }
 
         @Override
