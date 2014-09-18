@@ -23,9 +23,8 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 @Component
@@ -33,27 +32,26 @@ public class SpeakerDeckClient {
 
     private final URI speakerDeckBaseUri = URI.create("https://speakerdeck.com");
 
-    private final CrawlUtils crawlUtils;
+    private final SpeakerDeckCrawler speakerDeckCrawler;
 
     @Autowired
-    public SpeakerDeckClient(CrawlUtils crawlUtils) {
-        this.crawlUtils = crawlUtils;
+    public SpeakerDeckClient(SpeakerDeckCrawler speakerDeckCrawler) {
+        this.speakerDeckCrawler = speakerDeckCrawler;
     }
 
-    public Iterator<SpeakerDeckPresentation> userPresentations(String user) {
-        URI uri = URI.create(speakerDeckBaseUri + "/" + user);
-        UserSpeakerDeckCrawler userCrawler = new UserSpeakerDeckCrawler(uri, this.crawlUtils);
-        return new SpeakerDeckIterator(userCrawler);
+    public Iterator<SpeakerDeckPresentation> userPresentations(String username) throws Exception {
+        URI uri = URI.create(speakerDeckBaseUri + "/" + username);
+        return new SpeakerDeckReloadingIterator(this.speakerDeckCrawler, uri);
     }
 
-    public Iterator<SpeakerDeckPresentation> searchResultPresentations(String query) {
+
+    public Iterator<SpeakerDeckPresentation> searchResultPresentations(String query) throws Exception {
         URI uri = UriComponentsBuilder
                 .fromHttpUrl(speakerDeckBaseUri + "/search")
                 .queryParam("q", query)
                 .build()
                 .toUri();
-        SearchSpeakerDeckCrawler searchCrawler = new SearchSpeakerDeckCrawler(uri, this.crawlUtils);
-        return new SpeakerDeckIterator(searchCrawler);
+        return new SpeakerDeckReloadingIterator(this.speakerDeckCrawler, uri);
     }
 }
 
@@ -109,15 +107,16 @@ class CrawlUtils {
 
 }
 
-interface SpeakerDeckCrawler {
+@Component
+class SpeakerDeckCrawler {
 
-    CrawlResults crawl();
+    private final CrawlUtils crawlUtils;
 
-    default List<SpeakerDeckPresentation> speakerDeckPresentations(Document document) {
+    protected List<SpeakerDeckPresentation> speakerDeckPresentations(Document document) {
         return document.select("[class=talk public]").stream().map(e -> presentation(e, account(e))).collect(Collectors.toList());
     }
 
-    default SpeakerDeckPresentation presentation(Element e, SpeakerDeckAccount account) {
+    protected SpeakerDeckPresentation presentation(Element e, SpeakerDeckAccount account) {
         SpeakerDeckPresentation presentation = null;
         // title
         for (Element titleE : e.select("[class=talk-listing-meta]").select("h3[class=title]")) {
@@ -131,7 +130,7 @@ interface SpeakerDeckCrawler {
         return presentation;
     }
 
-    default SpeakerDeckAccount account(Element e) {
+    protected SpeakerDeckAccount account(Element e) {
 
         for (Element dateE : e.select("[class=date]")) {
             Elements aElement = dateE.select("a[href]");
@@ -142,13 +141,13 @@ interface SpeakerDeckCrawler {
         return null;
     }
 
-    default int currentPageNo(Document document) {
+    protected int currentPageNo(Document document) {
         Elements currentPageElement = document.select("[class=page current]");
         String currentTextForPageNo = currentPageElement.text().trim();
         return StringUtils.hasText(currentTextForPageNo) ? Integer.parseInt(currentTextForPageNo) : 0;
     }
 
-    default URI next(URI speakerDeckBaseUri, Document document) {
+    protected URI next(URI speakerDeckBaseUri, Document document) {
         Elements nextElement = document.select("a[rel=next]");
         if (nextElement != null && nextElement.size() != 0) {
             try {
@@ -160,93 +159,90 @@ interface SpeakerDeckCrawler {
         return null;
     }
 
-}
-
-class UserSpeakerDeckCrawler implements SpeakerDeckCrawler {
-
-    private final URI speakerDeckBaseUri;
-    private final CrawlUtils crawlUtils;
-
-    public UserSpeakerDeckCrawler(URI uri, CrawlUtils crawlUtils) {
-        this.speakerDeckBaseUri = uri;
+    @Autowired
+    public SpeakerDeckCrawler(CrawlUtils crawlUtils) {
         this.crawlUtils = crawlUtils;
     }
 
-    @Override
-    public CrawlResults crawl() {
+    public CrawlResults crawl(URI speakerDeckBaseUri) {
         String htmlForPage = crawlUtils.get(speakerDeckBaseUri);
-        Document document = Jsoup.parse(htmlForPage, this.speakerDeckBaseUri.toString());
-        List<SpeakerDeckPresentation> speakerDeckPresentations = this.speakerDeckPresentations(document);
+        Document document = Jsoup.parse(htmlForPage, speakerDeckBaseUri.toString());
         return new CrawlResults(
-                speakerDeckPresentations,
-                currentPageNo(document),
-                next(speakerDeckBaseUri, document));
+                this.speakerDeckPresentations(document),
+                this.currentPageNo(document),
+                this.next(speakerDeckBaseUri, document));
     }
-
 }
 
-class SearchSpeakerDeckCrawler implements SpeakerDeckCrawler {
+class SpeakerDeckReloadingIterator extends ReloadingIterator<SpeakerDeckPresentation> {
+    private SpeakerDeckCrawler speakerDeckCrawler;
+    private URI start;
 
-    private final URI speakerDeckBaseUri;
-
-    private final CrawlUtils crawlUtils;
-
-    public SearchSpeakerDeckCrawler(URI uri, CrawlUtils crawlUtils) {
-        this.speakerDeckBaseUri = uri;
-        this.crawlUtils = crawlUtils;
-    }
-
-    @Override
-    public CrawlResults crawl() {
-        String htmlForPage = crawlUtils.get(speakerDeckBaseUri);
-        Document document = Jsoup.parse(htmlForPage, this.speakerDeckBaseUri.toString());
-        List<SpeakerDeckPresentation> speakerDeckPresentations = this.speakerDeckPresentations(document);
-        return new CrawlResults(
-                speakerDeckPresentations,
-                currentPageNo(document),
-                next(speakerDeckBaseUri, document));
-    }
-
-}
-
-class SpeakerDeckIterator implements Iterator<SpeakerDeckPresentation> {
-
-    private final SpeakerDeckCrawler speakerDeckCrawler;
-    private CrawlResults crawlResults;
-    private Iterator<SpeakerDeckPresentation> speakerDeckPresentationsIterator;
-
-    private void loadFreshResults() {
-        if (this.crawlResults == null) {
-            synchronized (this) {
-                this.crawlResults = this.speakerDeckCrawler.crawl();
-                this.speakerDeckPresentationsIterator =
-                        this.crawlResults.getPresentations().iterator();
-            }
-        }
-    }
-
-    public SpeakerDeckIterator(SpeakerDeckCrawler speakerDeckCrawler) {
+    public SpeakerDeckReloadingIterator(SpeakerDeckCrawler speakerDeckCrawler, URI start) {
+        this.start = start;
         this.speakerDeckCrawler = speakerDeckCrawler;
     }
 
     @Override
-    public boolean hasNext() {
-        loadFreshResults();
-        return this.speakerDeckPresentationsIterator.hasNext();
+    public Collection<SpeakerDeckPresentation> more() {
+        CrawlResults crawlResults;
+        if ((crawlResults = this.speakerDeckCrawler.crawl(this.start)) != null) {
+            this.start = crawlResults.getNext();
+            return crawlResults.getPresentations();
+        }
+        return null;
+    }
+}
+
+abstract class ReloadingIterator<T> implements Iterator<T> {
+
+    public ReloadingIterator() {
+        this.collection = more();
+
+        this.iterator = this.collection.iterator();
     }
 
-    @Override
-    public SpeakerDeckPresentation next() {
-        loadFreshResults();
-        return this.speakerDeckPresentationsIterator.next();
-    }
+    private Collection<T> collection;
+    private Iterator<T> iterator;
+
+    public abstract Collection<T> more();
 
     @Override
     public void remove() {
-        throw new UnsupportedOperationException(
-                "#remove() is not supported");
+        throw new UnsupportedOperationException("remove () isn't supported!");
+    }
+
+    @Override
+    public void forEachRemaining(Consumer<? super T> action) {
+        Objects.requireNonNull(action);
+        while (hasNext())
+            action.accept(next());
+    }
+
+    void refill() {
+        Collection<T> ts = more();
+        if (ts == null || ts.size() == 0) {
+            collection = new ArrayList<>();
+        } else {
+            collection = ts;
+        }
+        iterator = collection.iterator();
+    }
+
+    @Override
+    public boolean hasNext() {
+        if (!this.iterator.hasNext())
+            this.refill();
+
+        return this.iterator.hasNext();
+    }
+
+    @Override
+    public T next() {
+        return this.iterator.next();
     }
 }
+
 
 class CrawlResults {
     private URI next;
@@ -279,7 +275,8 @@ class CrawlResults {
         return currentPage;
     }
 
-    public CrawlResults(List<SpeakerDeckPresentation> presentations, int currentPage, URI next) {
+    public CrawlResults(List<SpeakerDeckPresentation> presentations, int currentPage,
+                        URI next) {
         this.presentations = presentations;
         this.next = next;
         this.currentPage = currentPage;
