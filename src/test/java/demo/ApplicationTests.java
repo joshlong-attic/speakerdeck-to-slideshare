@@ -18,7 +18,6 @@ public class ApplicationTests {
     public void testSpeakerDeckUserPresentations() {
         this.speakerDeckClient.userPresentations("joshlong").
                 forEachRemaining(presentation -> System.out.println("found " + presentation.toString()));
-
     }
 
     @Test

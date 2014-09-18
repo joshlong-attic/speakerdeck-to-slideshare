@@ -26,6 +26,7 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Component
 public class SpeakerDeckClient {
@@ -41,7 +42,7 @@ public class SpeakerDeckClient {
 
     public Iterator<SpeakerDeckPresentation> userPresentations(String user) {
         URI uri = URI.create(speakerDeckBaseUri + "/" + user);
-        UserCrawler userCrawler = new UserCrawler(uri, this.crawlUtils);
+        UserSpeakerDeckCrawler userCrawler = new UserSpeakerDeckCrawler(uri, this.crawlUtils);
         return new SpeakerDeckIterator(userCrawler);
     }
 
@@ -51,7 +52,7 @@ public class SpeakerDeckClient {
                 .queryParam("q", query)
                 .build()
                 .toUri();
-        SearchCrawler searchCrawler = new SearchCrawler(uri, this.crawlUtils);
+        SearchSpeakerDeckCrawler searchCrawler = new SearchSpeakerDeckCrawler(uri, this.crawlUtils);
         return new SpeakerDeckIterator(searchCrawler);
     }
 }
@@ -108,8 +109,38 @@ class CrawlUtils {
 
 }
 
-interface Crawler {
+interface SpeakerDeckCrawler {
+
     CrawlResults crawl();
+
+    default List<SpeakerDeckPresentation> speakerDeckPresentations(Document document) {
+        return document.select("[class=talk public]").stream().map(e -> presentation(e, account(e))).collect(Collectors.toList());
+    }
+
+    default SpeakerDeckPresentation presentation(Element e, SpeakerDeckAccount account) {
+        SpeakerDeckPresentation presentation = null;
+        // title
+        for (Element titleE : e.select("[class=talk-listing-meta]").select("h3[class=title]")) {
+            Element aElement = titleE.select("a").first();
+            String title = aElement.getAllElements().text();
+            String url = aElement.absUrl("href");
+            String dataId = e.attr("data-id");
+            String dataSlideCount = e.attr("data-slide-count");
+            presentation = new SpeakerDeckPresentation(account, URI.create(url), dataId, title, Integer.parseInt(dataSlideCount));
+        }
+        return presentation;
+    }
+
+    default SpeakerDeckAccount account(Element e) {
+
+        for (Element dateE : e.select("[class=date]")) {
+            Elements aElement = dateE.select("a[href]");
+            String humanName = aElement.text();
+            String profileHref = aElement.first().absUrl("href");
+            return new SpeakerDeckAccount(URI.create(profileHref), humanName);
+        }
+        return null;
+    }
 
     default int currentPageNo(Document document) {
         Elements currentPageElement = document.select("[class=page current]");
@@ -131,12 +162,12 @@ interface Crawler {
 
 }
 
-class UserCrawler implements Crawler {
+class UserSpeakerDeckCrawler implements SpeakerDeckCrawler {
 
     private final URI speakerDeckBaseUri;
     private final CrawlUtils crawlUtils;
 
-    public UserCrawler(URI uri, CrawlUtils crawlUtils) {
+    public UserSpeakerDeckCrawler(URI uri, CrawlUtils crawlUtils) {
         this.speakerDeckBaseUri = uri;
         this.crawlUtils = crawlUtils;
     }
@@ -144,128 +175,58 @@ class UserCrawler implements Crawler {
     @Override
     public CrawlResults crawl() {
         String htmlForPage = crawlUtils.get(speakerDeckBaseUri);
-
-
-        List<SpeakerDeckPresentation> presentations = new ArrayList<>();
-
         Document document = Jsoup.parse(htmlForPage, this.speakerDeckBaseUri.toString());
-        Elements publicTalks = document.select("[class=talk public]");
-        for (Element e : publicTalks) {
-
-            SpeakerDeckAccount account = null;
-            SpeakerDeckPresentation presentation = null;
-
-            // account information
-            for (Element dateE : e.select("[class=date]")) {
-                Elements aElement = dateE.select("a[href]");
-                String humanName = aElement.text();
-                String profileHref = aElement.first().absUrl("href");
-                account = new SpeakerDeckAccount(URI.create(profileHref), humanName);
-            }
-
-            // title
-            for (Element titleE : e.select("[class=talk-listing-meta]").select("h3[class=title]")) {
-                Element aElement = titleE.select("a").first();
-                String title = aElement.getAllElements().text();
-                String url = aElement.absUrl("href");
-                String dataId = e.attr("data-id");
-                String dataSlideCount = e.attr("data-slide-count");
-                presentation = new SpeakerDeckPresentation(account, URI.create(url), dataId, title, Integer.parseInt(dataSlideCount));
-            }
-            presentations.add(presentation);
-        }
-
-
-        // let's find out the current page number
-
-        Elements currentPageElement = document.select("[class=page current]");
-        int currentPageNo = Integer.parseInt(currentPageElement.text().trim());
-
-        // let's find out if there's a "next" page, and if so, what it is
-        URI next = null;
-        Elements nextElement = document.select("a[rel=next]");
-        try {
-            next = new URI(speakerDeckBaseUri + "" + nextElement.attr("href"));
-        } catch (URISyntaxException e) {
-            e.printStackTrace();
-        }
-
-        return new CrawlResults(presentations, currentPageNo(document), next(speakerDeckBaseUri, document));
-
-
+        List<SpeakerDeckPresentation> speakerDeckPresentations = this.speakerDeckPresentations(document);
+        return new CrawlResults(
+                speakerDeckPresentations,
+                currentPageNo(document),
+                next(speakerDeckBaseUri, document));
     }
+
 }
 
-class SearchCrawler implements Crawler {
+class SearchSpeakerDeckCrawler implements SpeakerDeckCrawler {
 
     private final URI speakerDeckBaseUri;
 
     private final CrawlUtils crawlUtils;
 
-    public SearchCrawler(URI uri, CrawlUtils crawlUtils) {
+    public SearchSpeakerDeckCrawler(URI uri, CrawlUtils crawlUtils) {
         this.speakerDeckBaseUri = uri;
         this.crawlUtils = crawlUtils;
     }
 
-
     @Override
     public CrawlResults crawl() {
         String htmlForPage = crawlUtils.get(speakerDeckBaseUri);
-
-
-        List<SpeakerDeckPresentation> presentations = new ArrayList<SpeakerDeckPresentation>();
-
         Document document = Jsoup.parse(htmlForPage, this.speakerDeckBaseUri.toString());
-        Elements publicTalks = document.select("[class=talk public]");
-        for (Element e : publicTalks) {
-
-            SpeakerDeckAccount account = null;
-            SpeakerDeckPresentation presentation = null;
-
-            // account information
-            for (Element dateE : e.select("[class=date]")) {
-                Elements aElement = dateE.select("a[href]");
-                String humanName = aElement.text();
-                String profileHref = aElement.first().absUrl("href");
-                account = new SpeakerDeckAccount(URI.create(profileHref), humanName);
-            }
-
-            // title
-            for (Element titleE : e.select("[class=talk-listing-meta]").select("h3[class=title]")) {
-                Element aElement = titleE.select("a").first();
-                String title = aElement.getAllElements().text();
-                String url = aElement.absUrl("href");
-                String dataId = e.attr("data-id");
-                String dataSlideCount = e.attr("data-slide-count");
-                presentation = new SpeakerDeckPresentation(account, URI.create(url), dataId, title, Integer.parseInt(dataSlideCount));
-            }
-            presentations.add(presentation);
-        }
-
-        return new CrawlResults(presentations, currentPageNo(document), next(this.speakerDeckBaseUri, document));
+        List<SpeakerDeckPresentation> speakerDeckPresentations = this.speakerDeckPresentations(document);
+        return new CrawlResults(
+                speakerDeckPresentations,
+                currentPageNo(document),
+                next(speakerDeckBaseUri, document));
     }
-
 
 }
 
 class SpeakerDeckIterator implements Iterator<SpeakerDeckPresentation> {
 
-    private final Crawler crawler;
+    private final SpeakerDeckCrawler speakerDeckCrawler;
     private CrawlResults crawlResults;
     private Iterator<SpeakerDeckPresentation> speakerDeckPresentationsIterator;
 
     private void loadFreshResults() {
         if (this.crawlResults == null) {
             synchronized (this) {
-                this.crawlResults = this.crawler.crawl();
+                this.crawlResults = this.speakerDeckCrawler.crawl();
                 this.speakerDeckPresentationsIterator =
                         this.crawlResults.getPresentations().iterator();
             }
         }
     }
 
-    public SpeakerDeckIterator(Crawler crawler) {
-        this.crawler = crawler;
+    public SpeakerDeckIterator(SpeakerDeckCrawler speakerDeckCrawler) {
+        this.speakerDeckCrawler = speakerDeckCrawler;
     }
 
     @Override
